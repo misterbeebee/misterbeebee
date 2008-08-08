@@ -1,0 +1,27 @@
+PRE {
+    margin-left: 0.5in;
+    margin-right: 0.5in;
+    padding: 3px;
+}
+
+PRE.tutorial {
+    background-color: lightgreen;
+}
+
+PRE.console {
+    background-color: lightblue;
+}
+
+.inline_code {
+    color: green;
+    font-weight: bold;
+}
+
+.inline_code, .inline_lisp {
+    font-family: Courier, monospaced;
+}
+
+.changed_code {
+    color: red;
+    font-weight: bold;
+}

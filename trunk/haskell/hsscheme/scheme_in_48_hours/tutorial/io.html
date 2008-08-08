@@ -1,0 +1,176 @@
+<html>
+<head>
+<title>Write Yourself a Scheme in 48 hours</title>
+<link rel = "stylesheet" href = "styles.css" />
+</head>
+<body>
+<h1 align = "center">Write Yourself a Scheme in 48 Hours</h1>
+<h2 align = "center">A Haskell Tutorial</h2>
+<h3 align = "center">By Jonathan Tang</h3>
+<center><p><a href = "../scheme_in_48.tgz">Download in .tar.gz format</a><br />
+<a href = "../scheme_in_48.zip">Download in .zip format</a></p></center>
+<h3>Contents</h3>
+<ol>
+<li><a href = "overview.html">Overview</a></li>
+<li><a href = "firststeps.html">First Steps: Compiling and running</a></li>
+<li><a href = "parser.html">Parsing</a></li>
+<ol>
+<li><a href = "parser.html#symbols">A Simple Parser</a></li>
+<li><a href = "parser.html#whitespace">Whitespace</a></li>
+<li><a href = "parser.html#primitives">Literal Numbers and Strings: Return Values</a></li>
+<li><a href = "parser.html#lists">Lists, Dotted Lists, and Quoted Data: Recursive Parsers</a></li>
+</ol>
+<li><a href = "evaluator1.html">Evaluation, Part 1</a></li>
+<ol>
+<li><a href = "evaluator1.html#show">Displaying Values: Show and Typeclasses</a></li>
+<li><a href = "evaluator1.html#primitiveval">Evaluating Primitive Values: Pattern Matching</a></li>
+<li><a href = "evaluator1.html#primitivefunc">Evaluating Primitive Functions: First-class Functions</a></li>
+</ol>
+<li><a href = "errorcheck.html">Intermezzo: Error Checking & Exceptions</a></li>
+<li><a href = "evaluator2.html">Evaluation, Part 2</a></li>
+<ol>
+<li><a href = "evaluator2.html#primitives">Additional Primitives: Partial Application</a></li>
+<li><a href = "evaluator2.html#conditionals">Conditionals: Pattern Matching 2</a></li>
+<li><a href = "evaluator2.html#lists">List Primitives: car, cdr, and cons</a></li>
+<li><a href = "evaluator2.html#equal">Equal? and Weak Typing: Heterogenous Lists</a></li>
+</ol>
+<li><a href = "repl.html">Building a REPL: Basic I/O</a></li>
+<li><a href = "variables.html">Adding Variables and Assignment: Mutable State in Haskell</a></li>
+<li><a href = "functions.html">Defining Scheme Functions: Closures and Environments</a></li>
+<li>Creating IO Primitives: File I/O</li>
+<li><a href = "stdlib.html">Towards a Standard Library: Fold and Unfold</a></li>
+<li><a href = "conclusion.html">Conclusion & Further Resources</a></li>
+</ol>
+<h3>10. Creating IO primitives</h3>
+<p>
+Our Scheme can't really communicate with the outside world yet, so it would be nice if we could give it some I/O functions.  Also, it gets really tedious typing in functions every time we start the interpreter, so it would be nice to load files of code and execute them. 
+</p><p>
+The first thing we'll need is a new constructor for LispVals.  PrimitiveFuncs have a specific type signature that doesn't include the IO monad, so they can't perform any IO.  We want a dedicated constructor for primitive functions that perform IO:
+<pre class = "tutorial">
+             | IOFunc ([LispVal] -> IOThrowsError LispVal)
+</pre>
+While we're at it, let's also define a constructor for the Scheme data type of a <a href = "http://www.schemers.org/Documents/Standards/R5RS/HTML/r5rs-Z-H-9.html#%_sec_6.6.1">port</a>.  Most of our IO functions will take one of these to read from or write to:
+<pre class = "tutorial">
+             | Port Handle
+</pre>
+A <a href = "http://www.haskell.org/onlinereport/io.html#sect21">Handle</a> is basically the Haskell notion of a port: it's an opaque data type, returned from openFile and similar IO actions, that you can read and write to.
+</p><p>
+For completeness, we ought to provide showVal methods for the new data types:
+<pre class = "tutorial">
+showVal (Port _) = "&lt;IO port&gt;"
+showVal (IOFunc _) = "&lt;IO primitive&gt;"
+</pre>
+This'll let the REPL function properly and not crash when you use a function that returns a port.
+</p><p>
+We'll need to make some minor changes to our parser to support <a href = "http://www.schemers.org/Documents/Standards/R5RS/HTML/r5rs-Z-H-9.html#%_sec_6.6.4">load</a>.  Since Scheme files usually contain several definitions, we need to add a parser that will support several expressions, separated by whitespace.  And it also needs to handle errors.  We can re-use much of the existing infrastructure by factoring our basic readExpr so that it takes the actual parser as a parameter:
+<pre class = "tutorial">
+<span class = "changed_code">readOrThrow :: Parser a -></span> String -> ThrowsError a
+<span class = "changed_code">readOrThrow parser</span> input = case parse <span class = "changed_code">parser</span> "lisp" input of
+    Left err -> throwError $ Parser err
+    Right val -> return val
+
+<span class = "changed_code">
+readExpr = readOrThrow parseExpr
+readExprList = readOrThrow (endBy parseExpr spaces)
+</span>
+</pre>
+Again, think of both readExpr and readExprList as specializations of the newly-renamed readOrThrow.  We'll be using readExpr in our REPL to read single expressions; we'll be using readExprList from within load to read programs.
+</p><p>
+Next, we'll want a new list of IO primitives, structured just like the existing primitive list:
+<pre class = "tutorial">
+ioPrimitives :: [(String, [LispVal] -> IOThrowsError LispVal)]
+ioPrimitives = [("apply", applyProc),
+                ("open-input-file", makePort ReadMode),
+                ("open-output-file", makePort WriteMode),
+                ("close-input-port", closePort),
+                ("close-output-port", closePort),
+                ("read", readProc),
+                ("write", writeProc),
+                ("read-contents", readContents),
+                ("read-all", readAll)]
+</pre>
+The only difference here is in the type signature.  Unfortunately, we can't use the existing primitive list because lists cannot contain elements of different types.  We also need to change the definition of primitiveBindings to add our new primitives:
+<pre class = "tutorial">
+primitiveBindings :: IO Env
+primitiveBindings = nullEnv >>= (flip bindVars $ <span class = "changed_code">map (makeFunc IOFunc) ioPrimitives
+                                              ++ </span>map (makeFunc PrimitiveFunc) primitives)
+    where makeFunc <span class = "changed_code">constructor</span> (var, func) = (var, <span class = "changed_code">constructor</span> func)
+</pre>
+We've generalized makeFunc to take a constructor argument, and now call it on the list of ioPrimitives in addition to the plain old primitives.
+</p><p>
+Now we start defining the actual functions.  applyProc is a very thin wrapper around apply, responsible for destructuring the argument list into the form apply expects:
+<pre class = "tutorial">
+applyProc :: [LispVal] -> IOThrowsError LispVal
+applyProc [func, List args] = apply func args
+applyProc (func : args) = apply func args
+</pre>
+makePort wraps the Haskell function openFile, converting it to the right type and wrapping its return value in the Port constructor.  It's intended to be partially-applied to the IOMode, ReadMode for open-input-file and WriteMode for open-output-file:
+<pre class = "tutorial">
+makePort :: IOMode -> [LispVal] -> IOThrowsError LispVal
+makePort mode [String filename] = liftM Port $ liftIO $ openFile filename mode
+</pre>
+closePort also wraps the equivalent Haskell procedure, this time hClose:
+<pre class = "tutorial">
+closePort :: [LispVal] -> IOThrowsError LispVal
+closePort [Port port] = liftIO $ hClose port >> (return $ Bool True)
+closePort _ = return $ Bool False
+</pre>
+readProc (named to avoid a name conflict with the built-in read) wraps the Haskell hGetLine and then sends the result to parseExpr, to be turned into a LispVal suitable for Scheme:
+<pre class = "tutorial">
+readProc :: [LispVal] -> IOThrowsError LispVal
+readProc [] = readProc [Port stdin]
+readProc [Port port] = (liftIO $ hGetLine stdin) >>= liftThrows . readExpr
+</pre>
+Notice how hGetLine is of type <span class = "inline_code">IO String</span> yet readExpr is of type <span class = "inline_code">String -&gt; ThrowsError LispVal</span>, so they both need to be converted (with liftIO and liftThrows, respectively) to the IOThrowsError monad.  Only then can they be piped together with the monadic bind operator.
+</p><p>
+writeProc converts a LispVal to a string and then writes it out on the specified port:
+<pre class = "tutorial">
+writeProc :: [LispVal] -> IOThrowsError LispVal
+writeProc [obj] = writeProc [obj, Port stdout]
+writeProc [obj, Port port] = liftIO $ hPrint port obj >> (return $ Bool True)
+</pre>
+We don't have to explicitly call show on the object we're printing, because hPrint takes a value of type Show a.  It's calling show for us automatically.  This is why we bothered making LispVal an instance of Show; otherwise, we wouldn't be able to use this automatic conversion and would have to call showVal ourselves.  Many other Haskell functions also take instances of Show, so if we'd extended this with other IO primitives, it could save us significant labor.
+</p><p>
+readContents reads the whole file into a string in memory.  It's a thin wrapper around Haskell's readFile, again just lifting the IO action into an IOThrowsError action and wrapping it in a String constructor:
+<pre class = "tutorial">
+readContents :: [LispVal] -> IOThrowsError LispVal
+readContents [String filename] = liftM String $ liftIO $ readFile filename
+</pre>
+The helper function "load" doesn't do what Scheme's load does (we handle that later).  Rather, it's responsible only for reading and parsing a file full of statements.  It's used in two places: readAll (which returns a list of values) and load (which evaluates those values as Scheme expressions).
+<pre class = "tutorial">
+load :: String -> IOThrowsError [LispVal]
+load filename = (liftIO $ readFile filename) >>= liftThrows . readExprList
+</pre>
+readAll then just wraps that return value with the List constructor:
+<pre class = "tutorial">
+readAll :: [LispVal] -> IOThrowsError LispVal
+readAll [String filename] = liftM List $ load filename
+</pre>
+</p><p>
+Implementing the actual Scheme load function is a little tricky, because load can introduce bindings into the local environment.  Apply, however, doesn't take an environment argument, and so there's no way for a primitive function (or any function) to do this.  We get around this by implementing load as a special form:
+<pre class = "tutorial">
+eval env (List [Atom "load", String filename]) = 
+    load filename >>= liftM last . mapM (eval env)
+</pre>
+Finally, we might as well change our runOne function so that instead of evaluating a single expression from the command line, it takes the name of a file to execute and runs that as a program.  Additional command-line arguments will get bound into a list "args" within the Scheme program:
+<pre class = "tutorial">
+runOne :: [String] -> IO ()
+runOne args = do
+    env <- primitiveBindings >>= flip bindVars [("args", List $ map String $ drop 1 args)] 
+    (runIOThrows $ liftM show $ eval env (List [Atom "load", String (args !! 0)])) 
+         >>= hPutStrLn stderr
+</pre>
+That's a little involved, so let's go through it step-by-step.  The first line takes the original primitive bindings, passes that into bindVars, and then adds a variable named "args" that's bound to a List containing String versions of all but the first argument.  (The first argument is the filename to execute.)  Then, it creates a Scheme form (load "arg1"), just as if the user had typed it in, and evaluates it.  The result is transformed to a string (remember, we have to do this before catching errors, because the error handler converts them to strings and the types must match) and then we run the whole IOThrowsError action.  Then we print the result on STDERR.   (Traditional UNIX conventions hold that STDOUT should be used only or program output, with any error messages going to stderr.  In this case, we'll also be printing the return value of the last statement in the program, which generally has no meaning to anything.)
+</p><p>
+Then we change main so it uses our new runOne function.  Since we no longer need a third clause to handle the wrong number of command-line arguments, we can simplify it to an if statement:
+<pre class = "tutorial">
+main :: IO ()
+main = do args <- getArgs
+          if null args then runRepl else runOne $ args
+</pre>
+</p>
+<div align = "right">
+<a href = "stdlib.html">Next: Towards a Standard Library</a>
+</div>
+</body>
+</html>
